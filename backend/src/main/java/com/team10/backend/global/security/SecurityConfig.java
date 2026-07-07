@@ -68,8 +68,15 @@ public class SecurityConfig {
                     auth.requestMatchers(
                             "/api/v1/auth/signup",
                             "/api/v1/auth/login",
-                            "/api/v1/auth/refresh",
-                            "/api/v1/youth-policies/**"
+                            "/api/v1/auth/refresh"
+                    ).permitAll();
+
+                    // 청년정책 조회 API만 공개한다. 동기화/추천 POST는 외부 API 쿼터와 LLM 비용 보호를 위해 인증 필요.
+                    auth.requestMatchers(
+                            HttpMethod.GET,
+                            "/api/v1/youth-policies",
+                            "/api/v1/youth-policies/search",
+                            "/api/v1/youth-policies/{id:[0-9]+}"
                     ).permitAll();
 
                     // 주식 종목 조회
