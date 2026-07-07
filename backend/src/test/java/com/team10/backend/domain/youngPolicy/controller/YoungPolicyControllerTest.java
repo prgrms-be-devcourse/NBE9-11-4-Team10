@@ -1,14 +1,22 @@
 package com.team10.backend.domain.youngPolicy.controller;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.team10.backend.global.jwt.JwtProvider;
+import com.team10.backend.global.jwt.TokenBlocklistService;
+import com.team10.backend.global.security.JwtAccessDeniedHandler;
+import com.team10.backend.global.security.JwtAuthenticationEntryPoint;
+import com.team10.backend.global.security.SecurityConfig;
 import com.team10.backend.domain.youngPolicy.dto.req.YoungPolicyReq;
 import com.team10.backend.domain.youngPolicy.dto.req.YoungPolicyRecommendReq;
 import com.team10.backend.domain.youngPolicy.dto.res.YoungPolicyDetailRes;
@@ -20,6 +28,7 @@ import com.team10.backend.domain.youngPolicy.repository.YoungPolicyRepositoryTes
 import com.team10.backend.domain.youngPolicy.service.YoungPolicyService;
 import com.team10.backend.domain.youngPolicy.service.PolicyRagRecommendService;
 import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,11 +37,17 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.context.WebApplicationContext;
 
 @WebMvcTest(YoungPolicyController.class)
+@Import({SecurityConfig.class, JwtAuthenticationEntryPoint.class, JwtAccessDeniedHandler.class})
 class YoungPolicyControllerTest {
 
     @Autowired
+    private WebApplicationContext wac;
+
     private MockMvc mockMvc;
 
     @MockitoBean
@@ -40,6 +55,29 @@ class YoungPolicyControllerTest {
 
     @MockitoBean
     private PolicyRagRecommendService policyRagRecommendService;
+
+    @MockitoBean
+    private JwtProvider jwtProvider;
+
+    @MockitoBean
+    private TokenBlocklistService tokenBlocklistService;
+
+    @BeforeEach
+    void setUpJwtAuth() {
+        mockMvc = MockMvcBuilders.webAppContextSetup(wac)
+                .apply(springSecurity())
+                .build();
+        when(jwtProvider.parseTokenClaims(any(), anyBoolean()))
+                .thenReturn(new JwtProvider.TokenClaims(1L, "test-jti"));
+        when(tokenBlocklistService.isBlocked(any())).thenReturn(false);
+    }
+
+    private static RequestPostProcessor auth() {
+        return request -> {
+            request.addHeader("Authorization", "Bearer fake-token");
+            return request;
+        };
+    }
 
     @Test
     @DisplayName("청년 정책 목록 조회 API는 정책 요약 목록을 반환한다")
@@ -90,7 +128,7 @@ class YoungPolicyControllerTest {
     @Test
     @DisplayName("추천 경로는 상세 조회 ID로 매칭하지 않는다")
     void getRecommendPath_doesNotMatchDetailRoute() throws Exception {
-        mockMvc.perform(get("/api/v1/youth-policies/recommend"))
+        mockMvc.perform(get("/api/v1/youth-policies/recommend").with(auth()))
                 .andExpect(status().isMethodNotAllowed());
     }
 
@@ -101,6 +139,7 @@ class YoungPolicyControllerTest {
         when(youngPolicyService.syncPolicies(any(YoungPolicyReq.class))).thenReturn(response);
 
         mockMvc.perform(post("/api/v1/youth-policies/sync")
+                        .with(auth())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -118,6 +157,31 @@ class YoungPolicyControllerTest {
     }
 
     @Test
+    @DisplayName("청년 정책 동기화 API는 미인증 요청을 거부한다")
+    void syncPolicies_requiresAuthentication() throws Exception {
+        mockMvc.perform(post("/api/v1/youth-policies/sync")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "pageNum": 1,
+                                  "pageSize": 10
+                                }
+                                """))
+                .andExpect(status().isUnauthorized());
+
+        verifyNoInteractions(youngPolicyService, policyRagRecommendService);
+    }
+
+    @Test
+    @DisplayName("전체 청년 정책 동기화 API는 미인증 요청을 거부한다")
+    void syncAllPolicies_requiresAuthentication() throws Exception {
+        mockMvc.perform(post("/api/v1/youth-policies/sync-all"))
+                .andExpect(status().isUnauthorized());
+
+        verifyNoInteractions(youngPolicyService, policyRagRecommendService);
+    }
+
+    @Test
     @DisplayName("RAG 기반 청년 정책 추천 API는 맞춤 정책 카드 목록을 반환한다")
     void recommendPolicies_returnsMockedRecommendResult() throws Exception {
         YoungPolicyRecommendRes response = new YoungPolicyRecommendRes(List.of(
@@ -126,6 +190,7 @@ class YoungPolicyControllerTest {
         when(policyRagRecommendService.recommend(any(), any(YoungPolicyRecommendReq.class))).thenReturn(response);
 
         mockMvc.perform(post("/api/v1/youth-policies/recommend")
+                        .with(auth())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -142,5 +207,23 @@ class YoungPolicyControllerTest {
                 .andExpect(jsonPath("$.recommendedPolicies[0].recommendReason").value("주거비 부담을 덜어주기 위해 지원 대상으로 추천합니다."));
 
         verify(policyRagRecommendService).recommend(any(), any(YoungPolicyRecommendReq.class));
+    }
+
+    @Test
+    @DisplayName("RAG 기반 청년 정책 추천 API는 미인증 요청을 거부한다")
+    void recommendPolicies_requiresAuthentication() throws Exception {
+        mockMvc.perform(post("/api/v1/youth-policies/recommend")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "age": 25,
+                                  "region": "서울",
+                                  "category": "주거지원",
+                                  "query": "월세 지원을 받고 싶어요."
+                                }
+                                """))
+                .andExpect(status().isUnauthorized());
+
+        verifyNoInteractions(youngPolicyService, policyRagRecommendService);
     }
 }
